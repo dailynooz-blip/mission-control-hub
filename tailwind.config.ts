@@ -13,12 +13,20 @@ export default {
       },
     },
     extend: {
-      colors: {
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
+        colors: {
+          border: "hsl(var(--border))",
+          input: "hsl(var(--input))",
+          ring: "hsl(var(--ring))",
+          background: "hsl(var(--background))",
+          foreground: "hsl(var(--foreground))",
+          surface: {
+            DEFAULT: "hsl(var(--surface))",
+            card: "hsl(var(--surface-card))",
+            deep: "hsl(var(--surface-deep))",
+          },
+          success: "hsl(var(--success))",
+          warning: "hsl(var(--warning))",
+          danger: "hsl(var(--danger))",
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
