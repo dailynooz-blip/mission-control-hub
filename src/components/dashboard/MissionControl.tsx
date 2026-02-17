@@ -6,9 +6,11 @@ import FilesGrid from "./FilesGrid";
 import DailyGoals from "./DailyGoals";
 import AlertsPanel from "./AlertsPanel";
 import TimeTracking from "./TimeTracking";
+import AgentsView from "./AgentsView";
 
 const tabs = [
   { id: "dashboard", label: "Dashboard" },
+  { id: "agents", label: "Agents" },
   { id: "board", label: "Project Board" },
   { id: "chat", label: "Team Chat" },
   { id: "decisions", label: "Decisions" },
@@ -97,6 +99,7 @@ export default function MissionControl() {
         </div>
       )}
 
+      {activeTab === "agents" && <AgentsView />}
       {activeTab === "board" && <KanbanBoard fullPage />}
       {activeTab === "chat" && <TeamChat />}
       {activeTab === "decisions" && <DecisionsLog />}
