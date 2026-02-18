@@ -107,17 +107,45 @@ export async function runSchema(
 
   if (!url || !token) throw new Error("No credentials provided");
 
-  // Split statements, remove comments and blank lines
-  const statements = schemaSql
-    .split(/;\s*\n/)
-    .map((s) => s.trim())
-    .filter(
-      (s) =>
-        s.length > 0 &&
-        !s.startsWith("--") &&
-        !s.match(/^\/\*/) &&
-        !s.startsWith("PRAGMA") // skip PRAGMA for HTTP API
+  // Split statements respecting BEGIN...END blocks (for triggers).
+  // A naive split on /;\n/ would break multi-line triggers at the semicolon
+  // inside the trigger body.  Instead we walk char-by-char and only split
+  // when depth === 0 (i.e. we are not inside a BEGIN...END block).
+  const splitStatements = (sql: string): string[] => {
+    const results: string[] = [];
+    let depth = 0;
+    let current = "";
+    const upper = sql.toUpperCase();
+
+    for (let i = 0; i < sql.length; i++) {
+      const ch = sql[i];
+      current += ch;
+
+      // Track BEGIN / END keywords (word-boundary check)
+      const ahead = upper.slice(i);
+      if (/^BEGIN\b/.test(ahead)) depth++;
+      else if (/^END\b/.test(ahead) && depth > 0) depth--;
+
+      // Split only on top-level semicolons
+      if (ch === ";" && depth === 0) {
+        const stmt = current.trim();
+        if (stmt.length > 1) results.push(stmt);
+        current = "";
+      }
+    }
+    const remaining = current.trim();
+    if (remaining.length > 0) results.push(remaining);
+    return results;
+  };
+
+  const statements = splitStatements(schemaSql).filter((s) => {
+    const first = s.replace(/--[^\n]*/g, "").trimStart();
+    return (
+      first.length > 0 &&
+      !first.startsWith("/*") &&
+      !first.toUpperCase().startsWith("PRAGMA") // not supported by Turso HTTP API
     );
+  });
 
   const requests: { type: string; stmt?: { sql: string; args: [] } }[] =
     statements.map((sql) => ({
@@ -142,17 +170,17 @@ export async function runSchema(
 
   const json = await res.json();
 
-  // Check each result for errors (ignore "already exists" — those are safe)
+  // Check each result for errors (ignore safe/idempotent errors)
+  const SAFE_ERRORS = [
+    "already exists",
+    "duplicate column name",
+    "no transaction is active", // PRAGMA remnants
+  ];
   for (let i = 0; i < json.results?.length; i++) {
     const r = json.results[i];
     if (r.type === "error") {
       const msg: string = r.error?.message ?? "Unknown error";
-      if (
-        msg.includes("already exists") ||
-        msg.includes("duplicate column name")
-      ) {
-        continue; // safe to ignore
-      }
+      if (SAFE_ERRORS.some((s) => msg.includes(s))) continue;
       throw new Error(`Statement ${i + 1} failed: ${msg}`);
     }
     if (onProgress) onProgress(i + 1, statements.length, statements[i] ?? "");
