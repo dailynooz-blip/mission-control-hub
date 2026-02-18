@@ -1,75 +1,49 @@
 
-## In-App Turso Setup Panel (No CLI Required)
+## Fix: SQL Schema Parsing for Multi-line Triggers
 
-### Goal
-Replace the CLI-based setup with a built-in setup wizard inside the dashboard. The user pastes their Turso URL and auth token directly into a UI panel. The app then:
-1. Runs the full schema SQL via the Turso HTTP REST API
-2. Seeds the 9 agents
-3. Confirms the connection is live
+### The Problem
 
-Anyone who duplicates this Lovable project just opens the setup panel and fills in their own credentials — no terminal, no Windows/Mac differences, no CLI install.
+The `runSchema()` function in `src/lib/turso.ts` splits the schema SQL on every `;\n`. This breaks multi-line trigger statements like:
 
-### How It Works
-
-The Turso HTTP API (`/v2/pipeline`) already supports multi-statement batches. We send the entire `tursoSchema.sql` content as a series of execute requests directly from the browser. Credentials are stored in `localStorage` as a temporary runtime override (since Lovable secrets require a rebuild to take effect), so the connection goes live immediately without a redeploy.
-
-### Files to Create / Edit
-
-**1. `src/lib/tursoConfig.ts`** (new)
-- Reads credentials from `localStorage` first (runtime), then falls back to `import.meta.env` (build-time secrets)
-- Exports `getTursoUrl()`, `getTursoToken()`, `isTursoConfigured()`, `saveCredentials()`, `clearCredentials()`
-- This makes credentials hot-swappable without a rebuild
-
-**2. `src/lib/turso.ts`** (edit)
-- Update `TURSO_URL` / `TURSO_TOKEN` to read from `tursoConfig` instead of directly from `import.meta.env`
-- Add a `runSchema()` helper that sends the full schema SQL as a pipeline batch
-
-**3. `src/components/dashboard/TursoSetup.tsx`** (new)
-- A card/modal shown when `isTursoConfigured()` is false
-- Fields: Database URL, Auth Token (password input), "Initialize Database" button
-- Steps shown inline:
-  1. Test connection (SELECT 1)
-  2. Apply schema (all CREATE TABLE + triggers)
-  3. Seed agents (INSERT OR IGNORE)
-  4. Show success + "Go to Dashboard" button
-- On success, saves to localStorage and triggers a page reload so the live badge appears
-
-**4. `src/components/dashboard/MissionControl.tsx`** (edit)
-- If not configured, render `<TursoSetup />` as an overlay or first tab
-- If configured, render dashboard as normal with the Live badge
-
-**5. `src/pages/Index.tsx`** (edit, if needed)
-- Pass through the setup state to MissionControl
-
-### Setup Flow for Users / Duplicators
-
-```text
-1. Open the dashboard
-2. See "Connect Turso" setup panel (shown automatically when not configured)
-3. Go to https://turso.tech → sign up free → create DB "openclaw-state"
-4. Copy the DB URL (libsql://... → change to https://)
-5. Create a token on the Turso dashboard
-6. Paste both into the setup panel → click "Initialize Database"
-7. App runs schema + seeds agents → shows "Connected" → done
+```sql
+CREATE TRIGGER IF NOT EXISTS guard_subtask_count
+BEFORE INSERT ON tasks
+WHEN NEW.parent_task_id IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, '...')
+  WHERE (...) >= 5;   ← split happens here, inside the trigger body!
+END;
 ```
 
-No terminal. No CLI. Works identically on Windows, Mac, Linux.
+The Turso HTTP API receives the trigger body as a half-written statement, then gets a bare `END` as a separate execute — causing:
+- `SQL_PARSE_ERROR: unexpected end of input`
+- `cannot commit - no transaction is active`
+- Index creation failures (tables not yet created)
+
+### The Fix
+
+**File: `src/lib/turso.ts`** — rewrite the `runSchema()` statement splitter to track `BEGIN...END` depth and only split at top-level semicolons.
+
+The new algorithm:
+1. Walk the SQL character by character
+2. Track a `depth` counter — increment on `BEGIN`, decrement on `END`
+3. Only split into a new statement when hitting `;` while `depth === 0`
+4. This keeps each trigger intact as a single statement
+
+The fix also ignores errors for statements that are safe to skip (already exists, duplicate column, no transaction active from PRAGMA) while failing hard on real errors.
 
 ### Technical Details
 
-- Schema SQL is imported as a raw string using Vite's `?raw` import: `import schemaSql from '@/lib/tursoSchema.sql?raw'`
-- Statements are split on `;\n` and sent as individual `execute` requests in one pipeline batch
-- `localStorage` key: `turso_url` and `turso_token`
-- The `libsql://` prefix is auto-corrected to `https://` in the UI if the user pastes the wrong one
-- Error messages from Turso (e.g. table already exists) are shown inline so the user knows what happened
-- A "Re-run Schema" button is available after setup in case the DB needs to be reset
+- No new files needed — only `src/lib/turso.ts` changes
+- The `runSchema()` function's statement-parsing logic is replaced
+- `PRAGMA` statements are still skipped (not supported by Turso HTTP API)
+- `BEGIN`/`END` depth tracking handles nested blocks correctly
+- All other existing behavior (credential handling, error reporting, progress callback) stays the same
 
-### What Changes for Duplicators
+### What This Fixes
 
-Someone who duplicates this Lovable project:
-- Gets all the same code
-- Opens the app, sees the setup panel
-- Pastes their own Turso URL + token
-- Hits "Initialize" — done in ~3 seconds
-
-No secrets to configure in Lovable, no CLI, no SQL files to manually run.
+After this change, clicking "Initialize Database" in the setup panel will:
+1. Test connection — ✓ (already working)
+2. Apply schema — ✓ CREATE TABLEs, INDEXes, and TRIGGERs all sent as complete statements
+3. Seed agents — ✓ INSERT OR IGNORE runs cleanly
+4. Show "Connected — Go to Dashboard" — ✓
