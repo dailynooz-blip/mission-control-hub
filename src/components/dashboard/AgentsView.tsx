@@ -1,15 +1,18 @@
 import { useState } from "react";
-import { AGENTS, TASK_COLUMNS, type Agent, type TaskStatus } from "./agentsData";
+import { TASK_COLUMNS, type Agent, type TaskStatus } from "./agentsData";
+import { useTursoData } from "@/hooks/useTursoData";
 
 // ── Agent Sidebar ────────────────────────────────────────────────────────────
 function AgentSidebar({
+  agents,
   selected,
   onSelect,
 }: {
+  agents: Agent[];
   selected: Agent;
   onSelect: (a: Agent) => void;
 }) {
-  const working = AGENTS.filter((a) => a.status === "working").length;
+  const working = agents.filter((a) => a.status === "working").length;
 
   return (
     <div className="w-56 flex-shrink-0 bg-surface-card rounded-xl flex flex-col overflow-hidden">
@@ -18,13 +21,13 @@ function AgentSidebar({
           Agents
         </span>
         <span className="bg-surface-deep text-foreground text-xs rounded-full px-2 py-0.5 font-bold">
-          {AGENTS.length}
+          {agents.length}
         </span>
       </div>
 
       {/* All agents row */}
       <button
-        onClick={() => onSelect(AGENTS[0])}
+        onClick={() => agents[0] && onSelect(agents[0])}
         className="flex items-center gap-3 px-4 py-3 hover:bg-secondary/50 transition-colors border-b border-border"
       >
         <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-xs font-bold text-primary">
@@ -40,7 +43,7 @@ function AgentSidebar({
       </button>
 
       <div className="flex-1 overflow-y-auto">
-        {AGENTS.map((agent) => {
+        {agents.map((agent) => {
           const isSelected = selected.id === agent.id;
           const dotColor =
             agent.status === "working"
@@ -99,7 +102,7 @@ function AgentSidebar({
 }
 
 // ── Task Card ────────────────────────────────────────────────────────────────
-function TaskCard({ task, agent }: { task: (typeof AGENTS)[0]["tasks"][0]; agent: Agent }) {
+function TaskCard({ task, agent }: { task: Agent["tasks"][0]; agent: Agent }) {
   const priorityColor = task.priority === 1 ? "text-danger" : task.priority === 2 ? "text-warning" : "text-muted-foreground";
   return (
     <div className="bg-surface-deep rounded-xl p-4 mb-3 hover:border-primary/40 border border-border/50 transition-colors cursor-pointer group">
@@ -373,16 +376,25 @@ function AgentProfilePanel({
 
 // ── Main AgentsView ──────────────────────────────────────────────────────────
 export default function AgentsView() {
-  const [selectedAgent, setSelectedAgent] = useState<Agent>(AGENTS[0]);
+  const { agents, isLive, isLoading, error, lastUpdated, refetch } = useTursoData();
+  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [showProfile, setShowProfile] = useState(true);
   const [filterStatus, setFilterStatus] = useState<TaskStatus | "all">("all");
 
+  const activeAgent: Agent | undefined = selectedAgent ?? agents[0];
+
   const taskCounts = TASK_COLUMNS.reduce((acc, col) => {
-    acc[col.id] = selectedAgent.tasks.filter((t) => t.status === col.id).length;
+    acc[col.id] = activeAgent?.tasks.filter((t) => t.status === col.id).length ?? 0;
     return acc;
   }, {} as Record<string, number>);
-  const totalActive = AGENTS.filter((a) => a.status === "working").length;
-  const totalQueue = AGENTS.reduce((sum, a) => sum + a.tasks.filter((t) => t.status !== "done").length, 0);
+  const totalActive = agents.filter((a) => a.status === "working").length;
+  const totalQueue = agents.reduce((sum, a) => sum + a.tasks.filter((t) => t.status !== "done").length, 0);
+
+  if (!activeAgent) return (
+    <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+      Loading agents…
+    </div>
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -397,9 +409,29 @@ export default function AgentsView() {
           <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Tasks In Queue</div>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          {/* Live / Mock indicator */}
+          {isLive ? (
+            <button
+              onClick={refetch}
+              className="flex items-center gap-1.5 text-[10px] font-semibold text-success border border-success/30 bg-success/10 px-2 py-1 rounded-lg hover:bg-success/20 transition-colors"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-success pulse-dot" />
+              LIVE · {isLoading ? "syncing…" : lastUpdated ? `updated ${lastUpdated.toLocaleTimeString()}` : ""}
+            </button>
+          ) : (
+            <span className="flex items-center gap-1.5 text-[10px] font-semibold text-warning border border-warning/30 bg-warning/10 px-2 py-1 rounded-lg">
+              <span className="w-1.5 h-1.5 rounded-full bg-warning" />
+              MOCK DATA · add VITE_TURSO_URL to go live
+            </span>
+          )}
+          {error && (
+            <span className="text-[10px] text-danger bg-danger/10 border border-danger/30 px-2 py-1 rounded-lg">
+              ⚠ {error.slice(0, 60)}
+            </span>
+          )}
           <span className="text-xs text-muted-foreground">Filtering by:</span>
           <span className="bg-surface-card border border-primary/30 text-primary text-xs px-3 py-1 rounded-lg font-medium">
-            {selectedAgent.name}
+            {activeAgent?.name}
           </span>
           <button
             onClick={() => setShowProfile(!showProfile)}
@@ -412,7 +444,7 @@ export default function AgentsView() {
 
       <div className="flex gap-4 flex-1 min-h-0 overflow-hidden">
         {/* Left: agent list */}
-        <AgentSidebar selected={selectedAgent} onSelect={setSelectedAgent} />
+        <AgentSidebar agents={agents} selected={activeAgent} onSelect={setSelectedAgent} />
 
         {/* Center: task board */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
@@ -420,7 +452,7 @@ export default function AgentsView() {
           <div className="flex items-center gap-2 mb-3">
             <span className="w-2 h-2 rounded-full bg-warning inline-block" />
             <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-              {selectedAgent.name}'s Tasks
+              {activeAgent?.name}'s Tasks
             </span>
           </div>
 
@@ -449,13 +481,13 @@ export default function AgentsView() {
 
           {/* Board */}
           <div className="flex-1 overflow-x-auto">
-            <TaskBoard agent={selectedAgent} filterStatus={filterStatus} />
+            <TaskBoard agent={activeAgent} filterStatus={filterStatus} />
           </div>
         </div>
 
         {/* Right: agent profile */}
         {showProfile && (
-          <AgentProfilePanel agent={selectedAgent} onClose={() => setShowProfile(false)} />
+          <AgentProfilePanel agent={activeAgent} onClose={() => setShowProfile(false)} />
         )}
       </div>
     </div>
