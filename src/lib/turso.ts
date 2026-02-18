@@ -83,10 +83,25 @@ export async function tursoQuery(
   };
 }
 
+/** Unwrap a Turso cell value — the HTTP API returns {type, value} objects */
+function unwrapCell(cell: unknown): string | number | boolean | null {
+  if (cell === null || cell === undefined) return null;
+  if (typeof cell === "object" && cell !== null && "value" in cell) {
+    const obj = cell as unknown as { type: string; value: unknown };
+    const t = obj.type;
+    const v = obj.value;
+    if (t === "null" || v === null || v === undefined) return null;
+    if (t === "integer" || t === "float") return Number(v);
+    return String(v);
+  }
+  // Already a primitive (shouldn't happen with HTTP API but be safe)
+  return cell as string | number | boolean | null;
+}
+
 /** Convert raw rows → array of objects */
 export function rowsToObjects(result: TursoResult): TursoRow[] {
   return result.rows.map((row) =>
-    Object.fromEntries(result.columns.map((col, i) => [col, row[i]]))
+    Object.fromEntries(result.columns.map((col, i) => [col, unwrapCell(row[i])]))
   );
 }
 
