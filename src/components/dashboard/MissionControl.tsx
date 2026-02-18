@@ -7,6 +7,8 @@ import DailyGoals from "./DailyGoals";
 import AlertsPanel from "./AlertsPanel";
 import TimeTracking from "./TimeTracking";
 import AgentsView from "./AgentsView";
+import TursoSetup from "./TursoSetup";
+import { isTursoConfigured } from "@/lib/tursoConfig";
 
 const tabs = [
   { id: "dashboard", label: "Dashboard" },
@@ -32,12 +34,18 @@ export default function MissionControl() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(new Date());
+  const [configured, setConfigured] = useState(isTursoConfigured());
+
 
   useEffect(() => {
     if (!autoRefresh) return;
     const interval = setInterval(() => setLastRefreshed(new Date()), 30000);
     return () => clearInterval(interval);
   }, [autoRefresh]);
+
+  if (!configured) {
+    return <TursoSetup onConnected={() => setConfigured(true)} />;
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground p-5">
