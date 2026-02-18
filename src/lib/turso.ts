@@ -2,12 +2,14 @@
  * Turso HTTP API client (no backend needed — REST polling works from browser/OpenClaw)
  * Docs: https://docs.turso.tech/sdk/http/reference
  *
- * Set VITE_TURSO_URL and VITE_TURSO_AUTH_TOKEN in your .env or Lovable secrets.
- * OpenClaw uses the same credentials via its own HTTP client.
+ * Credentials are read dynamically from tursoConfig (localStorage → env fallback)
+ * so they can be changed without a rebuild.
  */
 
-const TURSO_URL = import.meta.env.VITE_TURSO_URL as string | undefined;
-const TURSO_TOKEN = import.meta.env.VITE_TURSO_AUTH_TOKEN as string | undefined;
+import { getTursoUrl, getTursoToken, isTursoConfigured } from "./tursoConfig";
+import schemaSql from "./tursoSchema.sql?raw";
+
+export { isTursoConfigured };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -24,15 +26,20 @@ export interface TursoResult {
 
 export async function tursoQuery(
   sql: string,
-  args: (string | number | boolean | null)[] = []
+  args: (string | number | boolean | null)[] = [],
+  overrideUrl?: string,
+  overrideToken?: string
 ): Promise<TursoResult> {
-  if (!TURSO_URL || !TURSO_TOKEN) {
+  const url = overrideUrl ?? getTursoUrl();
+  const token = overrideToken ?? getTursoToken();
+
+  if (!url || !token) {
     throw new Error(
-      "Turso not configured. Add VITE_TURSO_URL and VITE_TURSO_AUTH_TOKEN to your environment."
+      "Turso not configured. Use the setup panel to enter your URL and token."
     );
   }
 
-  const endpoint = `${TURSO_URL}/v2/pipeline`;
+  const endpoint = `${url}/v2/pipeline`;
   const body = {
     requests: [
       {
@@ -55,7 +62,7 @@ export async function tursoQuery(
   const res = await fetch(endpoint, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${TURSO_TOKEN}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
@@ -81,6 +88,75 @@ export function rowsToObjects(result: TursoResult): TursoRow[] {
   return result.rows.map((row) =>
     Object.fromEntries(result.columns.map((col, i) => [col, row[i]]))
   );
+}
+
+// ── Schema runner ─────────────────────────────────────────────────────────────
+
+/**
+ * Sends all CREATE TABLE, CREATE INDEX, CREATE TRIGGER, INSERT statements
+ * from tursoSchema.sql as a single pipeline batch.
+ * Safe to re-run (uses IF NOT EXISTS / INSERT OR IGNORE).
+ */
+export async function runSchema(
+  overrideUrl?: string,
+  overrideToken?: string,
+  onProgress?: (step: number, total: number, sql: string) => void
+): Promise<void> {
+  const url = overrideUrl ?? getTursoUrl();
+  const token = overrideToken ?? getTursoToken();
+
+  if (!url || !token) throw new Error("No credentials provided");
+
+  // Split statements, remove comments and blank lines
+  const statements = schemaSql
+    .split(/;\s*\n/)
+    .map((s) => s.trim())
+    .filter(
+      (s) =>
+        s.length > 0 &&
+        !s.startsWith("--") &&
+        !s.match(/^\/\*/) &&
+        !s.startsWith("PRAGMA") // skip PRAGMA for HTTP API
+    );
+
+  const requests: { type: string; stmt?: { sql: string; args: [] } }[] =
+    statements.map((sql) => ({
+      type: "execute",
+      stmt: { sql, args: [] as [] },
+    }));
+  requests.push({ type: "close" });
+
+  const res = await fetch(`${url}/v2/pipeline`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ requests }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Schema run failed (${res.status}): ${text}`);
+  }
+
+  const json = await res.json();
+
+  // Check each result for errors (ignore "already exists" — those are safe)
+  for (let i = 0; i < json.results?.length; i++) {
+    const r = json.results[i];
+    if (r.type === "error") {
+      const msg: string = r.error?.message ?? "Unknown error";
+      if (
+        msg.includes("already exists") ||
+        msg.includes("duplicate column name")
+      ) {
+        continue; // safe to ignore
+      }
+      throw new Error(`Statement ${i + 1} failed: ${msg}`);
+    }
+    if (onProgress) onProgress(i + 1, statements.length, statements[i] ?? "");
+  }
 }
 
 // ── Typed helpers ─────────────────────────────────────────────────────────────
@@ -200,9 +276,4 @@ export async function logAgentRun(run: {
       run.model ?? "gpt-4o",
     ]
   );
-}
-
-/** Check if Turso is configured */
-export function isTursoConfigured(): boolean {
-  return Boolean(TURSO_URL && TURSO_TOKEN);
 }
